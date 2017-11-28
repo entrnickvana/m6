@@ -54,7 +54,7 @@ typedef struct list_node {
 #define PACK(size, alloc) ((size) | (alloc))
 #define GET_SIZE(p) ((block_header *)(p))->size
 #define GET_ALLOC(p) ((block_header *)(p))->allocated
-#define CNK_FTRP(bp) ((char *)(bp)+GET_ALLOC(bp)- (3*sizeof(block_header)))
+#define CNK_HDRP(bp) ((char*)bp - (3*BLK_HDR_SZ))
 
 #define CHUNK_SIZE (1 << 14)
 #define CHUNK_ALIGN(size) (((size)+(CHUNK_SIZE-1)) & ~(CHUNK_SIZE-1))
@@ -74,18 +74,36 @@ static void stack();
 static void dbg_data();
 static int block_unequal(void* bp);
 static int block_mapped(void* p);
-static void print_block(void* bp, int hdr_ftr);
+static int check_block_hdr(void* bp, int hdr_ftr, int* size_sum, int* alloc, int print_on);
+static void initialize();
+static int check_chunk_hdr(void* bp, int hdr_ftr, size_t* size_sum , int* valid_nodes, int print_on);
+static size_t calc_target();
+static int mm_check1();
 
+size_t size_target = 0;
+int target_count = 0;
+double average  = 0;
 
-/*
-  TO DO
-  1) extend
-  2) set allocated
-  3) basic mm_check
-  4) basic can_free
-  5) basic unmap
-  6) 
-*/
+long delta1 = 0;
+long delta2 = 0;
+long delta3 = 0;
+long delta4 = 0;
+
+int alloc_block_bytes = 0;
+int unalloc_block_bytes = 0;
+int chunk_bytes = 0;   
+int num_chunks_set = 0; 
+int num_blocks = 0;
+int num_alloc_blocks = 0;
+int num_unalloc_blocks = 0;  
+
+int tmp_alloc_block_bytes = 0;
+int tmp_unalloc_block_bytes = 0;
+int tmp_chunk_bytes = 0;
+int tmp_num_chunks_set = 0;
+int tmp_num_blocks = 0;
+int tmp_num_alloc_blocks = 0;
+int tmp_num_unalloc_blocks = 0;
 
 int enter_on = 0;
 int stack_on = 0;
@@ -106,6 +124,8 @@ int check_init = 1;
 char in = 'z';
 void *current_avail_size = NULL;
 void* first_bp = NULL;
+size_t num_pages = 16;
+int dynamic_page_target = 1;
 
 
 /* 
@@ -113,24 +133,14 @@ void* first_bp = NULL;
  */
 int mm_init(void)
 {
-
-  enter_on = 1;
-  stack_on = 0;
-  num_init = 0;
-  num_chunks = 0;
-  num_extend = 0;
-  num_free = 0;
-  num_set_chunk = 0;
-  num_can_free = 0;
-  num_set_alloc = 0;
-
   void* current_avail = NULL;
   first_bp = NULL;
+
+  initialize();
 
   if(enter_on)printf("mm_init: %d\n", ++num_init);
   current_avail_size = 0;
 
-  size_t num_pages = 16;
   size_t num_bytes = mem_pagesize()*num_pages;
   size_t chunk_bytes = PAGE_ALIGN(num_bytes);
 
@@ -140,8 +150,51 @@ int mm_init(void)
     return -1;
   }
 
+  //check_chunk_hdr(first_bp, 0);
+  //check_block_hdr(first_bp, 0);
+  if(0) scanf("%c", &in);
+
+
   return 0; //arb
 }
+
+static size_t calc_target()
+{
+
+  return 0;
+}
+
+static void initialize(){
+
+  if(dynamic_page_target)
+  //size_target = mem_pagesize()*64  + (target_count*mem_pagesize()*(1 << ))
+
+  num_init = 0;
+  num_chunks = 0;
+  num_extend = 0;
+  num_free = 0;
+  num_set_chunk = 0;
+  num_can_free = 0;
+  num_set_alloc = 0;
+
+  alloc_block_bytes +=      tmp_alloc_block_bytes;
+  unalloc_block_bytes +=    tmp_unalloc_block_bytes;
+  chunk_bytes +=            tmp_chunk_bytes;
+  num_chunks_set +=         tmp_num_chunks_set;
+  num_blocks +=             tmp_num_blocks;
+  num_alloc_blocks +=       tmp_num_alloc_blocks;
+  num_unalloc_blocks +=     tmp_num_unalloc_blocks;
+
+  tmp_alloc_block_bytes = 0;
+  tmp_unalloc_block_bytes = 0;
+  tmp_chunk_bytes = 0;
+  tmp_num_chunks_set = 0;
+  tmp_num_blocks = 0;
+  tmp_num_alloc_blocks = 0;
+  tmp_num_unalloc_blocks = 0;
+
+}
+
 
 
 // chunk_capacity = sum all chunk sizes
@@ -149,7 +202,7 @@ int mm_init(void)
 // alloc capacity = sum all alloc blocks
 
 // byte check = (sum all chunks - num_chunks*chunk_overhead) == (unalloc capacity + alloc capacity)
-// 
+
 
 static void* set_new_chunk(size_t new_size){
   if(enter_on)printf("SET NEW CHUNK: %d\n", ++num_set_chunk);
@@ -160,6 +213,11 @@ static void* set_new_chunk(size_t new_size){
   list_node* chk_node1 = (list_node*)base_ptr;
   list_node* chk_node2 = (list_node*)((void*)base_ptr + SZ_LIST_NODE);
 
+  chk_node1->next = NULL;
+  chk_node1->prev = NULL;
+
+  chk_node2->next = NULL;
+  chk_node2->prev = NULL;
 
   block_header* chk_prolog_hdr  = (block_header*)((void*)base_ptr + (2*SZ_LIST_NODE));
   GET_SIZE(chk_prolog_hdr) = 2*BLK_HDR_SZ;
@@ -184,12 +242,14 @@ static void* set_new_chunk(size_t new_size){
   GET_SIZE(chk_terminator) = 0;
   GET_ALLOC(chk_terminator) = 1;
 
-  if(check_init){
-  if(check_init) print_block((void*)chk_prolog_hdr + BLK_HDR_SZ, 1);
-  if(check_init) print_block((void*)blk_hdr + BLK_HDR_SZ, 1);
-  if(check_init) print_block((void*)chk_terminator + BLK_HDR_SZ, 0); 
-  }
-  scanf("%c", &in);
+
+  tmp_unalloc_block_bytes += new_size - CHUNK_OVERHEAD - OVERHEAD;
+  tmp_chunk_bytes += new_size;
+  tmp_num_chunks_set++;
+  tmp_num_blocks++;
+
+
+  if(0) scanf("%c", &in);
 
   return bp;
 }
@@ -201,8 +261,13 @@ static void* set_new_chunk(size_t new_size){
 void *mm_malloc(size_t size) {
  if(enter_on)printf("MALLOC: %d\n", ++num_malloc);
 
+ int result = mm_check1();
+
  int new_size = ALIGN(size + OVERHEAD);
  void *bp = first_bp;
+ 
+
+ /*
  while (GET_SIZE(HDRP(bp)) != 0) { 
     ++block_loop;
     if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= new_size)) {
@@ -211,12 +276,12 @@ void *mm_malloc(size_t size) {
     }
    bp = NEXT_BLKP(bp);
  }
-
- extend(new_size);
- if(set_allocated(bp, new_size)) {printf("SET ALLOCATED FAILED:\n");}
- return bp;
+*/
+ void* new_bp;
+ new_bp = extend(new_size);
+ if(!set_allocated(new_bp, new_size)) {printf("SET ALLOCATED FAILED:\n");}
+ return new_bp;
 }
-
 
 
 static int set_allocated(void *bp, size_t size) {
@@ -232,10 +297,19 @@ size_t extra_size = GET_SIZE(HDRP(bp)) - size;
        GET_SIZE(HDRP(NEXT_BLKP(bp))) = extra_size;
        GET_SIZE(FTRP(NEXT_BLKP(bp))) = extra_size;       
        GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 0;
-       GET_ALLOC(FTRP(NEXT_BLKP(bp))) = 0;       
-  }
+       GET_ALLOC(FTRP(NEXT_BLKP(bp))) = 0;    
 
- if(!block_mapped(bp)) return 0;        
+       tmp_unalloc_block_bytes += extra_size;
+       tmp_unalloc_block_bytes -= size;
+       tmp_alloc_block_bytes += size;
+       tmp_num_alloc_blocks++;
+
+  }else{
+    tmp_unalloc_block_bytes -= size;
+    tmp_alloc_block_bytes += size;
+    tmp_num_alloc_blocks++;    
+    tmp_num_unalloc_blocks--;
+  }
 
  GET_ALLOC(HDRP(bp)) = 1;
  GET_ALLOC(FTRP(bp)) = 1; 
@@ -248,10 +322,19 @@ size_t extra_size = GET_SIZE(HDRP(bp)) - size;
  */
 static void* extend(size_t new_size) {
 if(enter_on) printf("EXTEND: %d\n", ++num_extend);  
-  size_t chunk_size = CHUNK_ALIGN(new_size);
+
+  size_t page_bytes = PAGE_ALIGN(new_size);
+  size_t extend_bytes = num_pages*page_bytes;
+  size_t chunk_size = CHUNK_ALIGN(extend_bytes);
+
+  if(chunk_size % 4096 != 0) {printf("EXTEND NOT ALIGNED\n"); }
+
+
   void *bp = set_new_chunk(chunk_size);
+
   if(bp == NULL)
-      if(debug_on) {printf("EXTEND failed to init new chunk\n"); /*scanf("%c",&in);*/}
+    if(debug_on) 
+      {printf("EXTEND failed to init new chunk\n"); /*scanf("%c",&in);*/}
   return bp;
 }
 
@@ -273,8 +356,101 @@ void mm_free(void *ptr)
  */
 int mm_check()
 {
-  if(enter_on) printf("mm_check: %d\n", ++num_check);      
-  return 1;
+
+  int block_size_sum = 0;
+  int block_size_sum_total = 0;  
+  int block_alloc = 0;
+  int block_size_alloc_sum = 0;
+  int block_size_alloc_sum_total = 0;  
+  int block_size_unalloc_sum = 0;  
+  int block_size_unalloc_sum_total = 0;    
+  int valid_nodes = 0;
+  size_t chunk_size_sum = 0;
+  size_t chunk_size_sum_total = 0;  
+  int block_sum = 0;
+  int blocks = 0;
+  int chunks = 0;
+  int block_sum_total = 0;  
+  int chunk_sum = 0;
+  int chunk_sum_total = 0;  
+
+  void* bp = first_bp;
+
+
+  if(!check_chunk_hdr(bp, 1, &chunk_size_sum, &valid_nodes, 0)) { return 0;}
+  else{ chunk_size_sum_total += chunk_size_sum; chunks++; }
+
+  while (GET_SIZE(HDRP(bp)) != 0) { 
+    if(!check_block_hdr(bp, 1, &block_size_sum, &block_alloc, 0 )) { return 0;}
+    else{
+           block_size_sum_total += block_size_sum;
+           blocks++;
+           if(block_alloc) 
+            block_size_alloc_sum_total +=  block_size_alloc_sum;
+           else
+            block_size_unalloc_sum_total +=  block_size_unalloc_sum;       
+    }
+  }
+
+  if(num_blocks == blocks)
+    if(num_chunks == chunks)
+      return 1;
+
+  scanf("%c", &in);
+
+
+  return 0;
+}
+
+
+static int mm_check1()
+{
+
+  int block_size_sum = 0;
+  int block_size_sum_total = 0;  
+  int block_alloc = 0;
+  int block_size_alloc_sum = 0;
+  int block_size_alloc_sum_total = 0;  
+  int block_size_unalloc_sum = 0;  
+  int block_size_unalloc_sum_total = 0;    
+  int valid_nodes = 0;
+  size_t chunk_size_sum = 0;
+  size_t chunk_size_sum_total = 0;  
+  int block_sum = 0;
+  int blocks = 0;
+  int chunks = 0;
+  int block_sum_total = 0;  
+  int chunk_sum = 0;
+  int chunk_sum_total = 0;  
+
+  void* bp = first_bp;
+
+  int glob_num_blocks = num_blocks;
+  int glob_num_chunks = num_chunks;
+
+  if(!check_chunk_hdr(bp, 1, &chunk_size_sum, &valid_nodes, 0)) { return 0;}
+  else{ chunk_size_sum_total += chunk_size_sum; chunks++; }
+
+  while (GET_SIZE(HDRP(bp)) != 0) { 
+    if(!check_block_hdr(bp, 1, &block_size_sum, &block_alloc, 0 )) { return 0;}
+    else{
+           block_size_sum_total += block_size_sum;
+           blocks++;
+           if(block_alloc) 
+            block_size_alloc_sum_total +=  block_size_alloc_sum;
+           else
+            block_size_unalloc_sum_total +=  block_size_unalloc_sum;       
+    }
+  }
+
+  if(num_blocks == blocks)
+    if(num_chunks == chunks)
+      return 1;
+
+  scanf("%c", &in);
+
+
+  return 0;
 }
 
 /*
@@ -303,29 +479,26 @@ static int block_unequal(void* bp){
   return result;
 }
 
-static void print_block(void* bp, int hdr_ftr){
-  int print_terminator = 0;
+static int check_block_hdr(void* bp, int hdr_ftr, int* size_sum, int* alloc, int print_on){
 
-  if(!ptr_is_mapped(bp, sizeof(block_header))) {printf("PRINT FAILED PTR UNMAPPED\n"); return; }
-  if(GET_SIZE(HDRP(bp)) == 32)
-  print_terminator = 1;
+  int x = hdr_ftr;
+  *size_sum = 0;
+  *alloc = 0;
 
-  printf("///  BLK_HDR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
+  if(!ptr_is_mapped(bp, sizeof(block_header))) {printf("PRINT FAILED PTR UNMAPPED\n"); return 0; }
+
+  if(print_on)
+  printf("\n///  BLK_HDR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
   HDRP(bp),
   (size_t)HDRP(bp) - (size_t)first_bp,
   GET_SIZE(HDRP(bp)),
   GET_ALLOC(HDRP(bp))
   );
 
-
-
   if(!hdr_ftr) return;
-  if(!ptr_is_mapped(bp, GET_SIZE(HDRP(bp)))) {printf("PRINT FAILED PTR UNMAPPED\n"); return; }
+  if(!ptr_is_mapped(HDRP(bp), GET_SIZE(HDRP(bp)))) {printf("PRINT FAILED PTR UNMAPPED\n"); return 0; }
 
-  if(GET_SIZE(FTRP(bp)) == 32 && ptr_is_mapped((void*)bp, (void*)bp + GET_ALLOC(HDRP(bp)) - (3*sizeof(block_header))){
-    print_terminator++;  
-  }
-
+  if(print_on)
   printf("///  BLK_FTR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
   FTRP(bp),
   (size_t)FTRP(bp) - (size_t)first_bp,
@@ -333,18 +506,85 @@ static void print_block(void* bp, int hdr_ftr){
   GET_ALLOC(FTRP(bp))
   );    
 
-  printf("DIST BETWEEN: %zu\n", GET_SIZE(FTRP(bp)) - GET_SIZE(HDRP(bp)) );
+  if(GET_SIZE(HDRP(bp)) != GET_SIZE(FTRP(bp))) {printf("FTR/HDR SIZE NOT EQUAl\n"); return 0; }
+  if(GET_ALLOC(HDRP(bp)) != GET_ALLOC(FTRP(bp))) {printf("FTR/HDR ALLOC NOT EQUAl\n"); return 0; }
+  if((size_t)((FTRP(bp) + BLK_HDR_SZ ) - HDRP(bp)) != GET_SIZE(HDRP(bp))) {printf("OFFSET NOT EQUAL TO SIZE\n"); return 0; }
 
-  if(print_terminator <= 1) {return;}
+  *size_sum = GET_SIZE(HDRP(bp));
+  *alloc = GET_ALLOC(HDRP(bp));
 
-  printf("///  CHUNK_FTR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
-  CNK_FTRP(bp),
-  (size_t)CNK_FTRP() - (size_t)first_bp,
-  GET_SIZE(CNK_FTRP(bp)),
-  GET_ALLOC(CNK_FTRP(bp))
+  return 1;
+}
+
+static int check_chunk_hdr(void* bp, int hdr_ftr, size_t* size_sum , int* valid_nodes, int print_on){
+
+  int x = hdr_ftr; 
+  *size_sum = 0;
+  *valid_nodes = 0;
+
+  void* node1 = (void*)bp - CHUNK_OVERHEAD;
+  list_node* lnode1 = (list_node*)node1;
+
+  if( ((list_node*)node1)->next != NULL && ((list_node*)node1)->prev != NULL){
+  if(!ptr_is_mapped(node1, SZ_LIST_NODE)) {printf("PRINT FAILED PTR NODE1 UNMAPPED\n"); return 0; }
+  if(!ptr_is_mapped(lnode1->next, SZ_LIST_NODE)) {printf("PRINT FAILED N1 PTR NXT UNMAPPED\n"); return 0; }  
+  if(!ptr_is_mapped(lnode1->prev, SZ_LIST_NODE)) {printf("PRINT FAILED N1 PTR PRV UNMAPPED\n"); return 0; }  
+  }
+
+  void* node2 = (void*)bp - CHUNK_OVERHEAD + SZ_LIST_NODE;
+  list_node* lnode2 = (list_node*)node1;
+
+  if(((list_node*)node2)->next != NULL && ((list_node*)node2)->prev != NULL){
+  if(!ptr_is_mapped(node2, SZ_LIST_NODE)) {printf("PRINT FAILED PTR NODE1 UNMAPPED\n"); return 0; }
+  if(!ptr_is_mapped(lnode2->next, SZ_LIST_NODE)) {printf("PRINT FAILED N1 PTR NXT UNMAPPED\n"); return 0; }  
+  if(!ptr_is_mapped(lnode2->prev, SZ_LIST_NODE)) {printf("PRINT FAILED N1 PTR PRV UNMAPPED\n"); return 0; }  
+  }
+  void* chunk_prolog_hdr = (void*)bp - (3*BLK_HDR_SZ);
+  void* chunk_prolog_ftr = (void*)chunk_prolog_hdr + BLK_HDR_SZ;
+
+
+  if(!ptr_is_mapped(chunk_prolog_hdr, sizeof(block_header))) {printf("PRINT FAILED PTR UNMAPPED\n"); return 0; }
+  if(print_on)
+  printf("\n///  CHUNK PRO HDR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
+  (void*)bp - (3*BLK_HDR_SZ),
+  (size_t)HDRP(bp) - (size_t)first_bp,
+  GET_SIZE(HDRP(bp)),
+  GET_ALLOC(HDRP(bp))
+  ); 
+
+  if(!ptr_is_mapped(chunk_prolog_hdr, 2*BLK_HDR_SZ)) {printf("PRINT FAILED PTR OF PROLOG FTR UNMAPPED\n"); return 0; }
+  if(print_on)  
+  printf("///  CHUNK PRO FTR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
+  FTRP(bp),
+  (size_t)FTRP(bp) - (size_t)first_bp,
+  GET_SIZE(FTRP(bp)),
+  GET_ALLOC(FTRP(bp))
   );    
 
-  printf("DIST BETWEEN: %zu\n", GET_SIZE(CNK_FTRP(bp)) - GET_SIZE(HDRP(bp)) );
+  size_t len_from_hdr_to_terminator = GET_ALLOC(chunk_prolog_hdr)  - (3*BLK_HDR_SZ);
+  void* chunk_terminator = (void*)chunk_prolog_hdr + len_from_hdr_to_terminator;
+
+  if(!ptr_is_mapped( chunk_terminator, sizeof(block_header))) {printf("PRINT FAILED PTR OF TERMINATOR MAPPED\n"); return 0; }
+  if(!ptr_is_mapped( (void*)bp - (5*BLK_HDR_SZ), GET_SIZE(chunk_prolog_hdr) )) {printf("PRINT FAILED CHUNK HDR to TERMINATOR FAILED MAPPED\n"); return 0; }
+
+  if(print_on)  
+  printf("///  CHUNK TERM FTR  ///  PTR: %p\t\t\t OFF: %zu\t\t\t SIZE: %zu\t\t\t  ALLOC: %zu\n", 
+  (void*)chunk_terminator,
+  (size_t)chunk_terminator - (size_t)first_bp,
+  GET_SIZE(chunk_terminator),
+  GET_ALLOC(chunk_terminator)
+  );    
+
+  if( GET_SIZE(chunk_prolog_hdr) != GET_SIZE(chunk_prolog_ftr)) {printf("FTR/HDR SIZE NOT EQUAl\n"); return 0; }
+  if( GET_SIZE(chunk_prolog_hdr) != 2*BLK_HDR_SZ) {printf("FTR/HDR SIZE 2 EQUAl\n"); return 0; }  
+  if( GET_ALLOC(chunk_prolog_hdr) != GET_ALLOC(chunk_prolog_ftr)) {printf("FTR/HDR ALLOC NOT EQUAl\n"); return 0; }
+  if( GET_SIZE(chunk_terminator) != 0) {printf("TERM SIZE NOT 0\n"); return 0; }
+  if( GET_ALLOC(chunk_terminator) != 1) {printf("TERM ALLOC NOT 1\n"); return 0; }
+
+  *size_sum = GET_ALLOC(chunk_prolog_hdr);
+  *valid_nodes = 1;
+
+  return 1;
 
 }
 
