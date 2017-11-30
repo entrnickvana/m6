@@ -635,7 +635,7 @@ static int eval_mm_valid(trace_t *trace, int tracenum, range_t **ranges, int che
 		malloc_error(tracenum, i, "mm_malloc failed.");
 		return 0;
 	    }
-            if (checks && !check(chaos, "malloc"))
+            if (checks && !check(chaos, "alloc"))
               return 0;
 	    
 	    /* 
@@ -643,7 +643,8 @@ static int eval_mm_valid(trace_t *trace, int tracenum, range_t **ranges, int che
 	     * to the range list if OK. The block must be  be aligned properly,
 	     * and must not overlap any currently allocated block. 
 	     */ 
-	    if (add_range(ranges, p, size, tracenum, i) == 0)
+	    if (!chaos)
+              if (add_range(ranges, p, size, tracenum, i) == 0)
 		return 0;
 	    
 	    /* ADDED: cgw
@@ -651,7 +652,8 @@ static int eval_mm_valid(trace_t *trace, int tracenum, range_t **ranges, int che
 	     * if we realloc the block and wish to make sure that the old
 	     * data was copied to the new block
 	     */
-	    memset(p, index & 0xFF, size);
+            if (!chaos)
+              memset(p, index & 0xFF, size);
 
 	    /* Remember region */
 	    trace->blocks[index] = p;
@@ -666,16 +668,19 @@ static int eval_mm_valid(trace_t *trace, int tracenum, range_t **ranges, int che
 		malloc_error(tracenum, i, "mm_malloc failed.");
 		return 0;
 	    }
-            if (checks && !check(chaos, "malloc"))
+            if (checks && !check(chaos, "alloc"))
               return 0;
 
 	    /* Remove the old region from the range list */
-	    remove_range(ranges, oldp);
+            if (!chaos)
+              remove_range(ranges, oldp);
 	    
 	    /* Check new block for correctness and add it to range list */
-	    if (add_range(ranges, newp, size, tracenum, i) == 0)
+            if (!chaos) {
+              if (add_range(ranges, newp, size, tracenum, i) == 0)
 		return 0;
-	    memset(newp, index & 0xFF, size);
+              memset(newp, index & 0xFF, size);
+            }
 
             if (checks && !check_free(chaos, oldp))
               return 0;
@@ -694,7 +699,8 @@ static int eval_mm_valid(trace_t *trace, int tracenum, range_t **ranges, int che
 	    
 	    /* Remove region from list and call student's free function */
 	    p = trace->blocks[index];
-	    remove_range(ranges, p);
+            if (!chaos)
+              remove_range(ranges, p);
             if (checks && !check_free(chaos, p))
               return 0;
             mm_free(p);
